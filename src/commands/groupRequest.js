@@ -39,6 +39,22 @@ function getAutoApproveGroups() {
 }
 
 /**
+ * 安全(BOT-1)：申请文本中的 CID 必须与申请 QQ 绑定，避免冒用他人身份入群。
+ */
+async function isQqBound(cid, qq) {
+  if (!cid || !qq) return false
+  const conn = await getPool().getConnection()
+  try {
+    const rows = await conn.query('SELECT qq FROM `User` WHERE cid = ? LIMIT 1', [String(cid)])
+    if (!rows || !rows.length) return false
+    const bound = String(rows[0].qq || '').trim()
+    return bound !== '' && bound === String(qq)
+  } finally {
+    conn.release()
+  }
+}
+
+/**
  * 在申请内容中查找平台注册用户身份。
  * 匹配规则（MySQL utf8mb4_unicode_ci 下字符串等值比较即大小写不敏感）：
  *   ① 整段内容精确等于 某个 CID / 邮箱 / 用户名
@@ -111,7 +127,8 @@ export async function handleGroupRequest(ws, event) {
 
   // 群白名单过滤
   const allowed = getAutoApproveGroups()
-  if (allowed.size > 0 && !allowed.has(groupId)) return
+  // 安全(BOT-1)：空集合 = 不自动通过任何群
+  if (allowed.size === 0 || !allowed.has(groupId)) return
 
   // 未填写申请内容 → 无法校验，不做处理
   if (!comment) {
@@ -129,6 +146,10 @@ export async function handleGroupRequest(ws, event) {
 
   if (hit) {
     const reason = `CW 平台注册用户（${hit.field}: ${hit.cid}）`
+    if (!(await isQqBound(hit.cid, userId))) {
+      console.log(`[GroupRequest] 身份与 QQ 未绑定，转人工审核: QQ=${userId} 群=${groupId} 命中(${hit.field}:${hit.cid})`)
+      return
+    }
     setGroupAddRequest(ws, flag, 'add', true, reason)
     console.log(`[GroupRequest] ✅ 自动通过: QQ=${userId} 群=${groupId} 匹配(${hit.field}:${hit.cid}) 内容="${comment}"`)
   } else {

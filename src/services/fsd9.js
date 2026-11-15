@@ -49,6 +49,10 @@ const CLIENT_PILOT = 1
 const CLIENT_ATC = 2
 const NEED_REVISION = 9
 
+function _normalizeAtis(text) {
+  return String(text || '').replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim()
+}
+
 function parseClientAddLine(raw, type) {
   const payload = raw.startsWith('#AA') || raw.startsWith('#AP') ? raw.slice(3) : raw
   const parts = payload.split(':')
@@ -398,6 +402,7 @@ class FSD9Client extends EventEmitter {
     const ctrl = this.controllers.get(key)
     if (!ctrl) return
 
+    const _oldFreq = Number(ctrl.frequency) || 0
     ctrl.frequency = parseInt(parts[1]) || 0
     ctrl.facilitytype = parseInt(parts[2]) || 0
     ctrl.visualrange = parseInt(parts[3]) || 40
@@ -405,6 +410,14 @@ class FSD9Client extends EventEmitter {
     ctrl.lon = parseFloat(parts[6]) || 0
     ctrl.altitude = parseInt(parts[7]) || 0
     ctrl.lastSeen = Date.now()
+
+    // 频率变化 → 通知播报（值没变时 EuroScope 会周期性重发，不触发）
+    if (_oldFreq !== ctrl.frequency) {
+      this.emit('controller:update', {
+        controller: ctrl,
+        changes: { frequency: { from: _oldFreq, to: ctrl.frequency } }
+      })
+    }
   }
 
   /** 处理 ATIS 数据（$AX） */
@@ -422,8 +435,16 @@ class FSD9Client extends EventEmitter {
       return
     }
     let data = parts.length >= 3 ? parts.slice(2).join(':') : parts.slice(1).join(':')
+    const _oldAtis = ctrl.atis || ''
     ctrl.atis = data.replace(/\^/g, '\n').trim()
     this.emit('controller:atis', { callsign, atis: ctrl.atis })
+    // ATIS 内容真正变化 → 通知播报（周期性重发同内容不触发）
+    if (_normalizeAtis(_oldAtis) !== _normalizeAtis(ctrl.atis)) {
+      this.emit('controller:update', {
+        controller: ctrl,
+        changes: { atis: { from: _oldAtis, to: ctrl.atis } }
+      })
+    }
   }
 
   _updateFlightPlan(raw) {

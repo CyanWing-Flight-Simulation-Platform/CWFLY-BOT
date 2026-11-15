@@ -136,12 +136,13 @@ function buildControllerCard(controller, type) {
 
   if (type === 'offline') {
     return [
-      `[${callsign} 离线通知]`,
-      `管制员: ${cid} ${callsign} ${realname}`.trim(),
-      `下线时间: ${formatTimeShort(startSec)}`,
-      `提供服务时长: ${formatDuration(startSec)}`,
-      `请范围内机组守听 122.8`,
-      '祝飞行愉快~'
+      `🛬 [${callsign}] 管制下线通知 👋`,
+      '━━━━━━━━━━━━━━',
+      `👨‍✈️ 管制员：${cid} ${callsign} ${realname}`.trim(),
+      `🕐 下线时间：${formatTimeShort(startSec)}`,
+      `⏱ 提供服务时长：${formatDuration(startSec)}`,
+      `📻 请范围内机组守听 122.8`,
+      '🌙 祝飞行愉快～'
     ].join('\n')
   }
 
@@ -150,21 +151,131 @@ function buildControllerCard(controller, type) {
   const atcInfo = atis ? atis.split('\n').map(l => l.trim()).filter(Boolean) : []
 
   const lines = [
-    `[${callsign} 上线通知]`,
-    `管制员：CID ${cid} ${realname}`,
-    `管制等级：${level}`,
-    `联系频率：${freq}`,
-    `上线时间：${formatUtc(startSec)} / ${new Date(startSec * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 本地`
+    `🛫 [${callsign}] 管制上线通知 🎧`,
+    '━━━━━━━━━━━━━━',
+    `👨‍✈️ 管制员：CID ${cid} ${realname}`,
+    `🏅 管制等级：${level}`,
+    `📡 联系频率：${freq}`,
+    `🕐 上线时间：${formatUtc(startSec)} / ${new Date(startSec * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 本地`
   ]
   if (atcInfo.length) {
     lines.push('')
-    lines.push('ATC INFO')
+    lines.push('📋 ATC INFO')
     lines.push(...atcInfo)
   }
   lines.push('')
-  lines.push('请范围内机组自主联系')
-  lines.push('祝联飞顺利~')
+  lines.push('🎧 请范围内机组自主联系')
+  lines.push('✈️ 祝联飞顺利～')
   return lines.join('\n')
+}
+
+// ===== 管制员信息更新通知（频率 / ATC INFO 变更） =====
+const INFO_UPDATE_GRACE_MS = Number(process.env.INFO_UPDATE_GRACE_MS || 15000) // 上线后 15s 内的初始 ATIS/频率不算更新
+const INFO_UPDATE_MIN_INTERVAL_MS = Number(process.env.INFO_UPDATE_MIN_INTERVAL_MS || 60000) // 同一席位 60s 内最多一条
+const INFO_UPDATE_COALESCE_MS = 2500 // 2.5s 内多项变更合并成一条
+
+/** 已播报上线的管制员：callsign -> { announcedAt } */
+const onlineControllers = new Map()
+/** 每席位上次更新播报时间 */
+const lastInfoNotifyAt = new Map()
+/** 合并中的更新：callsign -> { controller, changes, timer } */
+const pendingInfoUpdates = new Map()
+
+function normalizeAtisText(text) {
+  return String(text || '').replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim()
+}
+
+/** 截断过长的 ATC INFO，群消息保持可读 */
+function clipAtis(text, maxLines = 8, maxChars = 400) {
+  const lines = String(text || '')
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+  const clipped = lines.slice(0, maxLines)
+  let out = clipped.join('\n')
+  const truncated = clipped.length < lines.length || out.length > maxChars
+  if (out.length > maxChars) out = out.slice(0, maxChars).trimEnd()
+  return { text: out, truncated: truncated || out.length < lines.join('\n').length }
+}
+
+/** 管制信息更新卡片（emoji） */
+function buildControllerUpdateCard(controller, changes) {
+  const callsign = controller?.callsign || ''
+  const lines = [`📝 [${callsign}] 管制信息更新`, '━━━━━━━━━━━━━━']
+
+  if (changes.frequency) {
+    const { from, to } = changes.frequency
+    lines.push(`📡 联系频率：${formatFrequency(from)} → ${formatFrequency(to)}`)
+  }
+  if (changes.atis) {
+    const { text, truncated } = clipAtis(changes.atis.to)
+    lines.push('📋 ATC INFO 已更新：')
+    lines.push(...text.split('\n').map(l => `   ${l}`))
+    if (truncated) lines.push('   …（内容较长已截断，可在 ATC 客户端查看完整版）')
+  }
+  lines.push('')
+  lines.push(`🕐 更新时间：${formatTimeShort(Math.floor(Date.now() / 1000))}`)
+  lines.push('🎧 请范围内机组注意以上变化')
+  return lines.join('\n')
+}
+
+function sendGroupBroadcast(groupId, text, tag = '') {
+  if (!groupId || !text) return 0
+  let sent = 0
+  for (const ws of wss.clients) {
+    try {
+      sendGroupMessage(ws, groupId, text)
+      sent++
+    } catch {}
+  }
+  console.log(`[Bot] ${tag || '播报'}已推送 → group=${groupId} clients=${sent}\n${text}`)
+  return sent
+}
+
+/** 收集/合并变更，2.5s 后统一播报 */
+function flushControllerInfoUpdate(key) {
+  const pending = pendingInfoUpdates.get(key)
+  if (!pending) return
+  pendingInfoUpdates.delete(key)
+  const { controller, changes } = pending
+  if (!controller?.callsign) return
+
+  const last = lastInfoNotifyAt.get(key) || 0
+  if (Date.now() - last < INFO_UPDATE_MIN_INTERVAL_MS) {
+    console.log(`[Bot] 信息更新限频跳过 ${controller.callsign}（${Math.round((Date.now() - last) / 1000)}s < ${INFO_UPDATE_MIN_INTERVAL_MS / 1000}s）`)
+    return
+  }
+  lastInfoNotifyAt.set(key, Date.now())
+  const groupId = process.env.NOTIFY_GROUP_ID || process.env.CONTROL_GROUP_ID
+  const text = buildControllerUpdateCard(controller, changes)
+  sendGroupBroadcast(groupId, text, '管制信息更新通知')
+}
+
+/** FSD 上报频率/ATIS 变化：仅在已播报上线且过了宽限期后播报 */
+function onControllerInfoUpdate({ controller, changes } = {}) {
+  if (!controller?.callsign || !changes) return
+  if (!botReady) return
+  if (Date.now() < fsdSyncUntil) return
+  if (isNotifySkipped(controller)) return
+
+  const key = controller.callsign.toUpperCase()
+  const online = onlineControllers.get(key)
+  if (!online) return // 未播报上线的席位（如免播报/非真人）不推送
+  if (Date.now() - online.announcedAt < INFO_UPDATE_GRACE_MS) return // 上线瞬间的初始 ATIS/频率不算更新
+
+  const pending = pendingInfoUpdates.get(key)
+  if (pending) {
+    clearTimeout(pending.timer)
+    pending.changes = { ...pending.changes, ...changes }
+    pending.controller = controller
+    pending.timer = setTimeout(() => flushControllerInfoUpdate(key), INFO_UPDATE_COALESCE_MS)
+    return
+  }
+  pendingInfoUpdates.set(key, {
+    controller,
+    changes,
+    timer: setTimeout(() => flushControllerInfoUpdate(key), INFO_UPDATE_COALESCE_MS)
+  })
 }
 
 // 是否已就绪（等待 OneBot 连接建立后再推送，避免启动时快照刷屏 + 空连接发送）
@@ -231,6 +342,7 @@ function pushOnline(controller) {
     } catch {}
   }
   console.log(`[Bot] 上线通知已推送 ${controller.callsign} → group=${groupId} clients=${sent}`)
+  onlineControllers.set(controller.callsign.toUpperCase(), { announcedAt: Date.now() })
 }
 
 // 收到 ATIS 时，若该管制员正在等待上线通知，立即推送
@@ -281,6 +393,14 @@ function pushOffline(controller) {
     } catch {}
   }
   console.log(`[Bot] 下线通知已推送 ${controller.callsign} → group=${groupId} clients=${sent}`)
+  const _key = controller.callsign.toUpperCase()
+  onlineControllers.delete(_key)
+  const _pending = pendingInfoUpdates.get(_key)
+  if (_pending) {
+    clearTimeout(_pending.timer)
+    pendingInfoUpdates.delete(_key)
+  }
+  lastInfoNotifyAt.delete(_key)
 }
 
 
@@ -294,6 +414,7 @@ wss.on('listening', () => {
 client.on('controller:add', announceControllerOnline)
   client.on('controller:remove', announceControllerOffline)
   client.on('controller:atis', onControllerAtis)
+  client.on('controller:update', onControllerInfoUpdate)
   console.log(`
   ╔═══════════════════════════════════╗
   ║     CWFLY 飞控机器人 v1.0         ║
@@ -301,6 +422,7 @@ client.on('controller:add', announceControllerOnline)
   ║  WS Server: ${WS_HOST}:${WS_PORT}          ║
   ║  Auth: ${ACCESS_TOKEN ? 'Token' : 'No Token'}               ║
   ║  Groups: ${process.env.ALLOWED_GROUP_IDS || '(none)'}  ║
+  ║  Notify: ${process.env.NOTIFY_GROUP_ID || '(none)'}  ║
   ╚═══════════════════════════════════╝
   `)
 })

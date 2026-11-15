@@ -8,8 +8,6 @@ CWFLY 社区的 **QQ 群机器人**，通过 OneBot v11 协议接入（实测环
 
 ## 一、功能与命令
 
-> 播报防抖：下线通知延迟 2 秒发送；若 2 秒内收到同一呼号的上线（会话恢复补播），则取消下线通知，避免闪断刷出「先下线再上线」。
-
 | 命令 | 功能 | 说明 |
 |---|---|---|
 | `/help` | 帮助 | 列出全部命令与用法 |
@@ -122,23 +120,3 @@ python main.py            # 或 .\start-py.ps1
 | [CWFLY-ATC](https://github.com/yuanshen-123-ui/CWFLY-ATC) | 管制中心 |
 | [CWFLY-DOCS](https://github.com/yuanshen-123-ui/CWFLY-DOCS) | 文档站（含机器人命令说明） |
 
----
-
-## 贡献
-
-欢迎参与！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；
-提交 PR 即视为同意 [CLA.md](CLA.md)（你保留自己贡献的版权，同时授予项目发起人再许可能力）。
-
----
-
-## 许可证
-
-本项目采用 **GNU General Public License v3.0**（GPL-3.0）开源。
-完整条款见仓库根目录 [LICENSE](LICENSE)；简单说明：
-
-- 允许自由使用、修改、分发本软件（含商业用途）
-- 分发修改版或衍生作品时必须同样以 GPL-3.0 开源，并提供源码
-- 不提供任何担保（详见 GPL-3.0 第 15、16 条）
-
-版权归**所有著作人**（项目发起人及所有贡献者）所有。
-Copyright (C) 2026 全体著作人（All contributors）
