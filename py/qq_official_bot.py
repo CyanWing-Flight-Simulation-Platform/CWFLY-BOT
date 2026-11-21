@@ -96,20 +96,59 @@ def _notify_skipped(controller: dict) -> bool:
 
 
 def _format_notify_frequency(freq) -> str:
+    raw = str(freq if freq is not None else "").strip()
     try:
-        n = int(float(freq))
+        if "." in raw:
+            return f"{float(raw):.3f} MHz"
+        n = int(float(raw))
     except (TypeError, ValueError):
         return "未知"
     if n <= 0:
         return "未知"
     if n >= 100000:
         return f"{n / 1000:.3f} MHz"
+    if n >= 1000:
+        return f"{n / 1000:.3f} MHz"
     return f"1{n // 1000:02d}.{n % 1000:03d} MHz"
+
+
+FACILITY_LABELS = {
+    0: "观察员",
+    1: "飞行服务",
+    2: "放行",
+    3: "地面",
+    4: "塔台",
+    5: "进近",
+    6: "区调",
+}
+RATING_LABELS = {
+    1: "OBS", 2: "S1", 3: "S2", 4: "S3", 5: "C1", 6: "C2", 7: "C3",
+    8: "I1", 9: "I2", 10: "I3", 11: "SUP", 12: "ADM",
+}
+
+
+def _controller_role(controller: dict) -> str:
+    facility = controller.get("facilityType")
+    try:
+        facility = int(facility)
+    except (TypeError, ValueError):
+        facility = None
+    if facility in FACILITY_LABELS:
+        return FACILITY_LABELS[facility]
+    rating = controller.get("rating")
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        rating = None
+    return RATING_LABELS.get(rating, "管制席位")
 
 
 def _format_notify_time(start) -> str:
     try:
-        sec = int(start)
+        sec = float(start)
+        if sec > 1e12:
+            sec = sec / 1000
+        sec = int(sec)
     except (TypeError, ValueError):
         sec = int(time.time())
     if sec <= 0:
@@ -121,17 +160,20 @@ def build_controller_notice(controller: dict, online: bool) -> str:
     callsign = str(controller.get("callsign") or "").strip()
     cid = str(controller.get("cid") or "").strip()
     realname = str(controller.get("realname") or "").strip()
-    rating = controller.get("rating") or 0
+    role = _controller_role(controller)
     freq = _format_notify_frequency(controller.get("frequency"))
+    name_part = f"CID {cid}"
+    if realname and realname != cid and realname.upper() != callsign.upper():
+        name_part = f"{name_part} · {realname}"
     if online:
         return "\n".join(
             [
                 f"🛫 管制上线通知 | {callsign}",
                 "━━━━━━━━━━━━━━",
-                f"管制员：CID {cid} {realname}".strip(),
-                f"管制等级：{rating}",
+                f"管制员：{name_part}",
+                f"席位类型：{role}",
                 f"联系频率：{freq}",
-                f"上线时间：{_format_notify_time(controller.get('starttime'))}",
+                f"上线时间：{_format_notify_time(controller.get('starttime') or controller.get('_detectedAt') or controller.get('lastSeen'))}",
                 "",
                 "🎧 请范围内机组自主联系",
             ]
@@ -140,7 +182,8 @@ def build_controller_notice(controller: dict, online: bool) -> str:
         [
             f"🛬 管制下线通知 | {callsign}",
             "━━━━━━━━━━━━━━",
-            f"管制员：CID {cid} {realname}".strip(),
+            f"管制员：{name_part}",
+            f"席位类型：{role}",
             f"下线时间：{_format_notify_time(time.time())}",
             "",
             "🌙 祝飞行愉快～",
@@ -741,7 +784,9 @@ class CWFLYClient(botpy.Client):
                 for row in rows:
                     callsign = str(row.get("callsign") or "").strip().upper()
                     if callsign:
-                        current[callsign] = row
+                        item = dict(row)
+                        item["_detectedAt"] = time.time()
+                        current[callsign] = item
                 if self._notify_known is None:
                     self._notify_known = current
                     print(f"[notify] 管制上线播报基线已建立: {len(current)} 个席位", flush=True)
