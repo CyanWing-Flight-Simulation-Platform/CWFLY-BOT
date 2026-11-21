@@ -32,11 +32,10 @@ CWFLY 社区的 **QQ 群机器人**，通过 OneBot v11 协议接入（实测环
 
 | 目录 | 语言 | 说明 |
 |---|---|---|
-| `index.js` | JS | 入口：NapCat WebSocket 接入、事件分发、命令路由 |
+| `src/index.js` | JS | 唯一入口：NapCat WebSocket 接入、事件分发、命令路由 |
 | `src/commands/` | JS | 14 个命令实现（ai、airport、callController、chart、controllerQuery、event、groupRequest、help、metar、onlineStatus、pilotQuery、route、welcome） |
 | `src/services/` | JS | 服务层：ai、airport、fsd、fsd9（FSD 协议客户端）、route、weather |
 | `src/utils/` | JS | 工具（格式化、限频、日志等） |
-| `fsd9.js` | JS | FSD 协议客户端（历史版本，保留兼容） |
 | `py/` | Python | 与 JS 对齐的 Python 版（`main.py`、`onebot.py`、`commands/`、`services/`） |
 | `test/` | JS/Py | `fsd9.test.js`、`test_smoke.py`、`test_atis_e2e.py` |
 | `data/` | - | 运行期缓存（机场数据、下载）；不入库 |
