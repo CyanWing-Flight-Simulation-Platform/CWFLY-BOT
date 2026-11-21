@@ -128,7 +128,7 @@ RATING_LABELS = {
 
 
 def _controller_role(controller: dict) -> str:
-    facility = controller.get("facilityType")
+    facility = controller.get("facilityType", controller.get("facilitytype"))
     try:
         facility = int(facility)
     except (TypeError, ValueError):
@@ -768,9 +768,68 @@ class CWFLYClient(botpy.Client):
         self._notify_group_openid = load_notify_openid()
         self._notify_task = None
         self._notify_known = None
+        self._fsd_sync_until = 0.0
+
+    async def _start_notifier(self) -> None:
+        """优先使用 FSD9 实时事件；连接失败时退回 HTTP 轮询。"""
+        try:
+            import sys
+
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
+            from py.fsd9 import ensure_fsd9_started, get_fsd9_client
+
+            client = get_fsd9_client()
+            client.on("ready", self._on_fsd_ready)
+            client.on("controller:add", self._on_fsd_controller_add)
+            client.on("controller:remove", self._on_fsd_controller_remove)
+            self._fsd_sync_until = time.time() + 5
+            await ensure_fsd9_started()
+            for _ in range(40):
+                if client.authenticated:
+                    break
+                await asyncio.sleep(0.2)
+            if not client.authenticated:
+                raise RuntimeError("FSD9 未完成认证")
+            print("[notify] 已连接 FSD9 实时管制事件", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[notify] FSD9 实时事件不可用，改用 HTTP 轮询: {exc}", flush=True)
+            await self._notify_controller_loop()
+
+    def _on_fsd_ready(self) -> None:
+        # 重连时 FSD 会重新下发全量在线席位，5 秒内只建基线
+        self._fsd_sync_until = time.time() + 5
+
+    def _on_fsd_controller_add(self, controller: dict) -> None:
+        if not controller or time.time() < self._fsd_sync_until:
+            return
+        item = dict(controller)
+        item["_detectedAt"] = time.time()
+        asyncio.create_task(self._send_controller_notice_after_delay(item, True))
+
+    def _on_fsd_controller_remove(self, controller: dict) -> None:
+        if not controller or time.time() < self._fsd_sync_until:
+            return
+        asyncio.create_task(self._send_controller_notice(controller, False))
+
+    async def _send_controller_notice_after_delay(self, controller: dict, online: bool) -> None:
+        # #AA 到达时频率/ATIS 可能还没跟上，稍等位置更新再发
+        await asyncio.sleep(2)
+        latest = None
+        try:
+            import sys
+
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
+            from py.fsd9 import get_fsd9_client
+
+            latest = get_fsd9_client().get_controller(controller.get("callsign"))
+        except Exception:  # noqa: BLE001
+            latest = None
+        await self._send_controller_notice(latest or controller, online)
 
     async def _notify_controller_loop(self) -> None:
-        """轮询 FSD 在线管制列表，做差量播报；首次快照只建基线，不刷屏。"""
+        """HTTP 轮询兜底：首次快照只建基线，不刷屏。"""
         try:
             interval = max(5, int(_env_value("QQ_NOTIFY_POLL_SECONDS", "8") or "8"))
         except ValueError:
@@ -868,9 +927,9 @@ class CWFLYClient(botpy.Client):
 
         state.parsers["group_message_create"] = parse_group_message_create
         self._handled_group_message_ids = set()
-        # botpy 版本差异下 on_ready 不一定会被分发；登录完成即启动轮询任务
+        # botpy 版本差异下 on_ready 不一定会被分发；登录完成即启动通知任务
         if self._notify_task is None or self._notify_task.done():
-            self._notify_task = asyncio.create_task(self._notify_controller_loop())
+            self._notify_task = asyncio.create_task(self._start_notifier())
         print(
             f"[notify] 管制播报轮询已启动 group={self._notify_group_openid or '未绑定'}",
             flush=True,
