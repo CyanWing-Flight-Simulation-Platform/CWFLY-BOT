@@ -826,7 +826,20 @@ class CWFLYClient(botpy.Client):
             latest = get_fsd9_client().get_controller(controller.get("callsign"))
         except Exception:  # noqa: BLE001
             latest = None
-        await self._send_controller_notice(latest or controller, online)
+        merged = dict(controller)
+        if latest:
+            merged.update(latest)
+        # 用 HTTP 视图补齐 facilityType / frequency 等字段
+        try:
+            data = await asyncio.to_thread(api_get, "/flightplans/fsd/controllers")
+            key = str(merged.get("callsign") or "").upper()
+            for row in data.get("data") or []:
+                if str(row.get("callsign") or "").upper() == key:
+                    merged.update(row)
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        await self._send_controller_notice(merged, online)
 
     async def _notify_controller_loop(self) -> None:
         """HTTP 轮询兜底：首次快照只建基线，不刷屏。"""
