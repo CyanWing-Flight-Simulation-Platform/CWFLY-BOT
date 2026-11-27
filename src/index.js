@@ -11,7 +11,7 @@
 import 'dotenv/config'
 import { WebSocketServer } from 'ws'
 import { dispatch } from './commands/index.js'
-import { getFSD9Client } from './services/fsd9.js'
+import { getObserver } from './services/fsdHttp.js'
 import { sendGroupMessage } from './utils/onebot.js'
 import { isNotifySkipped } from './utils/notifyFilter.js'
 
@@ -405,16 +405,17 @@ function pushOffline(controller) {
 
 
 wss.on('listening', () => {
-  // 预连接 FSD9，确保 /在线状态、/机组查询 等立即可用
-  const client = getFSD9Client()
+  // 启动后端快照观察器（10s 轮询），替代原先的 FSD9 直连
+  const client = getObserver()
   client.on('connect', () => {
-  // 刚连上 FSD 时会收到一批已有在线客户端，2 秒内视为快照，不播报
-  fsdSyncUntil = Date.now() + 2000
-})
-client.on('controller:add', announceControllerOnline)
+    // 首次快照里的既有在线者不播报
+    fsdSyncUntil = Date.now() + 2000
+    console.log('[Bot] 在线快照已接入，管制上下线通知启用')
+  })
+  client.on('controller:add', announceControllerOnline)
   client.on('controller:remove', announceControllerOffline)
-  client.on('controller:atis', onControllerAtis)
   client.on('controller:update', onControllerInfoUpdate)
+  client.start()
   console.log(`
   ╔═══════════════════════════════════╗
   ║     CWFLY 飞控机器人 v1.0         ║

@@ -16,7 +16,7 @@ import websockets
 
 from . import config, onebot
 from .commands.index import dispatch
-from .fsd9 import ensure_fsd9_started, get_fsd9_client
+from .services.fsd_http import get_observer, start_observer
 
 # 管制等级映射（FSD rating -> 等级字符串）
 RATING_MAP = {
@@ -260,14 +260,14 @@ async def _connection(ws):
 
 
 async def _wire_fsd():
-    client = get_fsd9_client()
-    client.on('controller:add', lambda c: announce_controller_online(c))
-    client.on('controller:remove', lambda c: announce_controller_offline(c))
-    client.on('controller:atis', lambda p: asyncio.create_task(on_controller_atis(p)))
+    """订阅后端快照观察器（10s 轮询），不再直连 FSD。"""
+    observer = get_observer()
+    observer.on('controller:add', lambda c: announce_controller_online(c))
+    observer.on('controller:remove', lambda c: announce_controller_offline(c))
 
 
 async def main():
-    await ensure_fsd9_started()
+    await start_observer()
     await _wire_fsd()
     async with websockets.serve(_connection, config.WS_HOST, config.WS_PORT):
         print(f'[OneBot] WS server listening on {config.WS_HOST}:{config.WS_PORT}')

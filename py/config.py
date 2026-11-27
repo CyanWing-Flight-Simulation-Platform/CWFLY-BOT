@@ -58,11 +58,15 @@ ACCESS_TOKEN = env('ONEBOT_ACCESS_TOKEN', '')
 BOT_SELF_ID = env('BOT_SELF_ID', '')
 
 # ---- 上游 API ----
+# ---- 后端 API（机器人不再直连 FSD）----
+CWFLY_API_KEY = env('CWFLY_API_KEY', '')
+FSD_POLL_SECONDS = env_int('FSD_POLL_SECONDS', 10)
 FSD_API_URL = env('FSD_API_URL', 'http://127.0.0.1:8080/api')
 CWFLY_API_URL = env('CWFLY_API_URL', 'http://127.0.0.1:3000/api')
 API_BASE = env('API_BASE', 'http://localhost:3000/api')
 
 # ---- FSD9 协议直连 ----
+# 以下 FSD 直连配置已废弃：机器人改为轮询后端快照，不再连接 6809
 FSD_HOST = env('FSD_HOST', '127.0.0.1')
 FSD_PORT = env_int('FSD_PORT', 6809)
 FSD_BOT_CALLSIGN = env('FSD_BOT_CALLSIGN', 'CW-BOT')

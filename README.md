@@ -41,7 +41,10 @@ CWFLY 社区的 **QQ 群机器人**，通过 OneBot v11 协议接入（实测环
 | `data/` | - | 运行期缓存（机场数据、下载）；不入库 |
 | `start-py.ps1` | PS1 | Windows 下启动 Python 版 |
 
-机器人以 **CID 0000（呼号 `CW-BOT`）** 连接 FSD 服务器：用于读取在线列表、发送系统消息、拉取计划/ATIS。
+机器人**不再与 FSD 建立协议连接**：在线列表/计划/管制信息统一来自后端 `/api/online/snapshot`（后端读 FSD 落库快照），
+消息与广播走后端 `/api/online/message`、`/api/online/broadcast`。
+
+> ATIS 仅存于 FSD 内存，不经协议连接取不到，因此机器人播报不再包含 ATIS 文本（上线/下线/频率变更仍照常播报）。
 
 ---
 
@@ -55,9 +58,9 @@ CWFLY 社区的 **QQ 群机器人**，通过 OneBot v11 协议接入（实测环
 | OneBot | `ONEBOT_ACCESS_TOKEN` | NapCat 的 access token |
 | OneBot | `BOT_SELF_ID` | 机器人 QQ 号 |
 | 主站 | `CWFLY_API_URL` | 主站 API（`http://127.0.0.1:3000/api`） |
-| FSD | `FSD_HOST` / `FSD_PORT` | FSD 服务器地址（`127.0.0.1:6809`） |
-| FSD | `FSD_BOT_CALLSIGN` / `FSD_BOT_CID` | 机器人 FSD 身份（`CW-BOT` / `0000`） |
-| FSD | `FSD_BOT_PASSWORD` | 机器人 FSD 口令（**必须从环境变量注入**） |
+| 后端 | `CWFLY_API_KEY` | 调用 `/api/online/snapshot` 的密钥（= 后端 `OPENAPI_KEY`） |
+
+
 | 数据库 | `DB_HOST/PORT/USER/PASSWORD/NAME` | 直连 MySQL（部分查询/统计） |
 | AI | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_MODELS` | OpenAI 兼容接口与模型列表 |
 | 群组 | `ALLOWED_GROUP_IDS` / `CONTROL_GROUP_ID` / `NOTIFY_GROUP_ID` | 允许服务的群、管理群、通知群 |

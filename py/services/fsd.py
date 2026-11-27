@@ -1,16 +1,16 @@
-"""FSD 在线状态查询服务。
+"""FSD 在线状态查询服务（纯 HTTP）。
 
-优先通过 FSD9 协议直连获取实时数据，
-当 FSD9 不可用时，自动回退到 HTTP API。
+数据来自后端 /api/online/snapshot；机器人不再与 FSD 建立协议连接。
 """
 import asyncio
 import time
 
 from .. import config
-from ..fsd9 import get_fsd9_client
 from . import http
+from .fsd_http import get_observer, get_observer_status
 
-FSD_API_URL = config.FSD_API_URL
+API_BASE = (getattr(config, 'CWFLY_API_URL', '') or 'http://127.0.0.1:3001/api').rstrip('/')
+API_KEY = (getattr(config, 'CWFLY_API_KEY', '') or '').strip()
 
 
 def is_system_callsign(callsign):
@@ -18,21 +18,22 @@ def is_system_callsign(callsign):
     return (callsign or '').upper().startswith('CW-')
 
 
-def get_fsd9_status():
-    client = get_fsd9_client()
-    if not client.is_ready:
+def get_snapshot_status():
+    status = get_observer_status()
+    if not status:
         return None
-    pilots = [p for p in client.pilot_list if not is_system_callsign(p.get('callsign'))]
-    controllers = [c for c in client.controller_list if not is_system_callsign(c.get('callsign'))]
-    return {'pilots': pilots, 'controllers': controllers, 'clients': pilots + controllers}
+    return {**status, 'source': 'snapshot'}
 
 
 async def get_api_status():
-    """HTTP API 后备。"""
-    resp = await http.http_get(FSD_API_URL, timeout=5)
+    """HTTP 快照后备。"""
+    headers = {'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; CWFLY-Bot/1.0; +https://www.cwflysim.cn)'}
+    if API_KEY:
+        headers['X-API-Key'] = API_KEY
+    resp = await http.http_get(f'{API_BASE}/online/snapshot', timeout=8, headers=headers)
     if resp.status_code != 200:
-        raise RuntimeError(f'FSD HTTP {resp.status_code}')
-    data = resp.json()
+        raise RuntimeError(f'snapshot HTTP {resp.status_code}')
+    data = (resp.json() or {}).get('data') or {}
     pilots = data.get('pilots') or [
         c for c in data.get('clients') or [] if c.get('type') == 'PILOT']
     controllers = data.get('controllers') or [
@@ -43,63 +44,39 @@ async def get_api_status():
 
 
 async def get_fsd_status():
-    """统一查询接口（FSD9 → API 后备）。"""
-    # 等待 FSD9 连接就绪（最多 ~4 秒），避免首次查询误走不可用的 HTTP 回退
-    client = get_fsd9_client()
-    if not client.is_ready:
-        for _ in range(8):
-            await asyncio.sleep(0.5)
-            if client.is_ready:
-                break
-    fsd9 = get_fsd9_status()
-    if fsd9:
-        return {
-            'pilots': fsd9['pilots'],
-            'controllers': fsd9['controllers'],
-            'total': len(fsd9['clients']),
-            'source': 'fsd9',
-        }
-    api = await get_api_status()
-    return {
-        'pilots': api['pilots'],
-        'controllers': api['controllers'],
-        'total': api['total'],
-        'source': 'api',
-    }
+    """统一查询入口：观察器缓存优先，失败回退 HTTP。"""
+    status = get_snapshot_status()
+    if status:
+        return {**status, 'total': len(status['clients'])}
+    data = await get_api_status()
+    return {**data, 'source': 'http',
+            'total': len(data.get('pilots') or []) + len(data.get('controllers') or [])}
 
 
 async def query_pilot(callsign):
-    key = callsign.upper()
-    client = get_fsd9_client()
-    if client.is_ready:
-        pilot = client.get_pilot(key)
-        if pilot:
-            return pilot
-        client.query_client(key)
-        return None
+    key = str(callsign or '').upper()
+    observer = get_observer()
+    if observer.is_ready:
+        return observer.get_pilot(key)
     try:
         data = await get_fsd_status()
-        return next((p for p in data['pilots']
-                     if (p.get('callsign') or '').upper() == key), None)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
+    return next((p for p in data.get('pilots') or []
+                 if str(p.get('callsign') or '').upper() == key), None)
 
 
 async def query_controller(callsign):
-    key = callsign.upper()
-    client = get_fsd9_client()
-    if client.is_ready:
-        ctrl = client.get_controller(key)
-        if ctrl:
-            return ctrl
-        client.query_client(key)
-        return None
+    key = str(callsign or '').upper()
+    observer = get_observer()
+    if observer.is_ready:
+        return observer.get_controller(key)
     try:
         data = await get_fsd_status()
-        return next((c for c in data['controllers']
-                     if (c.get('callsign') or '').upper() == key), None)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
+    return next((c for c in data.get('controllers') or []
+                 if str(c.get('callsign') or '').upper() == key), None)
 
 
 # ========== 格式化输出 ==========
@@ -119,7 +96,7 @@ async def format_online_status():
     try:
         data = await get_fsd_status()
         now = time.strftime('%Y-%m-%d %H:%M:%S')
-        source = 'FSD9直连' if data['source'] == 'fsd9' else 'HTTP API'
+        source = '后端快照' if data['source'] == 'snapshot' else 'HTTP API'
         return '\n'.join([
             f'在线机组：{len(data["pilots"])}',
             f'在线管制：{len(data["controllers"])}',

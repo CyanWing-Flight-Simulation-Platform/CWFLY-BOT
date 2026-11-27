@@ -771,29 +771,29 @@ class CWFLYClient(botpy.Client):
         self._fsd_sync_until = 0.0
 
     async def _start_notifier(self) -> None:
-        """优先使用 FSD9 实时事件；连接失败时退回 HTTP 轮询。"""
+        """订阅后端快照观察器（10s 轮询），不再直连 FSD。"""
         try:
             import sys
 
             if str(ROOT) not in sys.path:
                 sys.path.insert(0, str(ROOT))
-            from py.fsd9 import ensure_fsd9_started, get_fsd9_client
+            from py.services.fsd_http import get_observer, start_observer
 
-            client = get_fsd9_client()
-            client.on("ready", self._on_fsd_ready)
-            client.on("controller:add", self._on_fsd_controller_add)
-            client.on("controller:remove", self._on_fsd_controller_remove)
+            observer = get_observer()
+            observer.on("connect", self._on_fsd_ready)
+            observer.on("controller:add", self._on_fsd_controller_add)
+            observer.on("controller:remove", self._on_fsd_controller_remove)
             self._fsd_sync_until = time.time() + 5
-            await ensure_fsd9_started()
+            await start_observer()
             for _ in range(40):
-                if client.authenticated:
+                if observer.is_ready:
                     break
                 await asyncio.sleep(0.2)
-            if not client.authenticated:
-                raise RuntimeError("FSD9 未完成认证")
-            print("[notify] 已连接 FSD9 实时管制事件", flush=True)
+            if not observer.is_ready:
+                raise RuntimeError("后端快照未就绪")
+            print("[notify] 已接入后端在线快照（管制上下线通知）", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[notify] FSD9 实时事件不可用，改用 HTTP 轮询: {exc}", flush=True)
+            print(f"[notify] 快照不可用，改用 HTTP 轮询: {exc}", flush=True)
             await self._notify_controller_loop()
 
     def _on_fsd_ready(self) -> None:
@@ -821,9 +821,9 @@ class CWFLYClient(botpy.Client):
 
             if str(ROOT) not in sys.path:
                 sys.path.insert(0, str(ROOT))
-            from py.fsd9 import get_fsd9_client
+            from py.services.fsd_http import get_observer
 
-            latest = get_fsd9_client().get_controller(controller.get("callsign"))
+            latest = get_observer().get_controller(controller.get("callsign"))
         except Exception:  # noqa: BLE001
             latest = None
         merged = dict(controller)

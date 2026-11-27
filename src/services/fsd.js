@@ -1,41 +1,40 @@
 /**
- * FSD 在线状态查询服务
+ * FSD 在线状态查询服务（纯 HTTP）
  *
- * 优先通过 FSD9 协议直连获取实时数据，
- * 当 FSD9 不可用时，自动回退到 HTTP API。
+ * 数据来自后端 /api/online/snapshot（后端读 FSD 落库快照），
+ * 机器人不再与 FSD 建立协议连接。
  */
 
-import { getFSD9Client } from './fsd9.js'
+import { getObserver, getObserverStatus } from './fsdHttp.js'
 
-const FSD_API_URL = process.env.FSD_API_URL || 'http://127.0.0.1:8080/api'
+const API_BASE = (process.env.CWFLY_API_URL || 'http://127.0.0.1:3001/api').replace(/\/+$/, '')
+const API_KEY = (process.env.CWFLY_API_KEY || '').trim()
 
-// ========== FSD9 直连接口（首选） ==========
+// ========== 在线快照（后端 /api/online/snapshot） ==========
 
 // 系统连接（CW-BOT/CW-MAP-*/CW-FP*）不计入在线统计
 function isSystemCallsign(callsign) {
   return (callsign || '').toUpperCase().startsWith('CW-')
 }
 
-function getFSD9Status() {
-  const client = getFSD9Client()
-  if (!client.isReady) return null
-  const pilots = client.pilotList.filter(p => !isSystemCallsign(p.callsign))
-  const controllers = client.controllerList.filter(c => !isSystemCallsign(c.callsign))
-  return {
-    pilots,
-    controllers,
-    clients: [...pilots, ...controllers]
-  }
+function getSnapshotStatus() {
+  const status = getObserverStatus()
+  if (!status) return null
+  return { ...status, source: 'snapshot' }
 }
 
 // ========== HTTP API 后备 ==========
 
 async function getApiStatus() {
-  const response = await fetch(FSD_API_URL, {
-    signal: AbortSignal.timeout(5000)
+  const headers = { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; CWFLY-Bot/1.0; +https://www.cwflysim.cn)' }
+  if (API_KEY) headers['X-API-Key'] = API_KEY
+  const response = await fetch(`${API_BASE}/online/snapshot`, {
+    headers,
+    signal: AbortSignal.timeout(8000)
   })
-  if (!response.ok) throw new Error(`FSD HTTP ${response.status}`)
-  const data = await response.json()
+  if (!response.ok) throw new Error(`snapshot HTTP ${response.status}`)
+  const payload = await response.json()
+  const data = payload?.data || {}
   const pilots = (data.pilots || data.clients?.filter?.(c => c.type === 'PILOT') || [])
     .filter(p => !isSystemCallsign(p.callsign))
   const controllers = (data.controllers || data.clients?.filter?.(c => c.type === 'ATC') || [])
@@ -43,44 +42,19 @@ async function getApiStatus() {
   return { pilots, controllers, total: pilots.length + controllers.length }
 }
 
-// ========== 统一查询接口（FSD9 → API 后备） ==========
+// ========== 统一查询接口（观察器缓存 → HTTP 后备） ==========
 
 export async function getFsdStatus() {
-  // 等待 FSD9 连接就绪（最多 ~4 秒），避免首次查询误走不可用的 HTTP 回退
-  const client = getFSD9Client()
-  if (!client.isReady) {
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 500))
-      if (client.isReady) break
-    }
-  }
-  const fsd9 = getFSD9Status()
-  if (fsd9) {
-    return {
-      pilots: fsd9.pilots,
-      controllers: fsd9.controllers,
-      total: fsd9.clients.length,
-      source: 'fsd9'
-    }
-  }
-  const api = await getApiStatus()
-  return {
-    pilots: api.pilots,
-    controllers: api.controllers,
-    total: api.total,
-    source: 'api'
-  }
+  const status = getSnapshotStatus()
+  if (status) return { ...status, total: status.clients.length }
+  const data = await getApiStatus()
+  return { ...data, source: 'http', total: (data.pilots?.length || 0) + (data.controllers?.length || 0) }
 }
 
 export async function queryPilot(callsign) {
-  const key = callsign.toUpperCase()
-  const client = getFSD9Client()
-  if (client.isReady) {
-    const pilot = client.getPilot(key)
-    if (pilot) return pilot
-    client.queryClient(key)
-    return null
-  }
+  const key = String(callsign || '').toUpperCase()
+  const client = getObserver()
+  if (client.isReady) return client.getPilot(key)
   try {
     const data = await getFsdStatus()
     return data.pilots.find(p => p.callsign?.toUpperCase() === key) || null
@@ -90,14 +64,9 @@ export async function queryPilot(callsign) {
 }
 
 export async function queryController(callsign) {
-  const key = callsign.toUpperCase()
-  const client = getFSD9Client()
-  if (client.isReady) {
-    const ctrl = client.getController(key)
-    if (ctrl) return ctrl
-    client.queryClient(key)
-    return null
-  }
+  const key = String(callsign || '').toUpperCase()
+  const client = getObserver()
+  if (client.isReady) return client.getController(key)
   try {
     const data = await getFsdStatus()
     return data.controllers.find(c => c.callsign?.toUpperCase() === key) || null
@@ -115,7 +84,7 @@ export async function formatOnlineStatus() {
   try {
     const data = await getFsdStatus()
     const now = new Date().toLocaleString('zh-CN', { hour12: false })
-    const source = data.source === 'fsd9' ? 'FSD9直连' : 'HTTP API'
+    const source = data.source === 'snapshot' ? '后端快照' : 'HTTP API'
     return [
       `在线机组：${data.pilots.length}`,
       `在线管制：${data.controllers.length}`,
